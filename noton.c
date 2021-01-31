@@ -16,12 +16,10 @@ WITH REGARD TO THIS SOFTWARE.
 
 #define HOR 32
 #define VER 16
-#define PAD 8
-#define color1 0x000000
-#define color2 0xffffff
-#define color3 0x777777
-#define color4 0x72dec2
-#define color0 0xffb545
+#define PAD 2
+#define SZ (HOR * VER * 16)
+
+typedef unsigned char Uint8;
 
 #define GATEMAX 128
 #define WIREMAX 256
@@ -30,7 +28,7 @@ WITH REGARD TO THIS SOFTWARE.
 #define INPUTMAX 12
 #define OUTPUTMAX 12
 
-#define CHANNELS 4
+#define CHANNELS 6
 #define DEVICE 0
 
 typedef enum {
@@ -71,16 +69,37 @@ typedef struct Brush {
 	Wire wire;
 } Brush;
 
-int WIDTH = 8 * HOR + PAD * 2;
-int HEIGHT = 8 * VER + PAD * 2;
-int ZOOM = 2;
+int WIDTH = 8 * HOR + 8 * PAD * 2;
+int HEIGHT = 8 * (VER + 2) + 8 * PAD * 2;
+int ZOOM = 2, GUIDES = 1;
+
+Noton noton;
+Brush brush;
+
+Uint32 theme[] = {
+	0x000000,
+	0xffb545,
+	0x72DEC2,
+	0xffffff,
+	0x222222};
+
+Uint8 icons[][8] = {
+	{0x38, 0x7c, 0xee, 0xd6, 0xee, 0x7c, 0x38, 0x00}, /* gate:input */
+	{0x38, 0x44, 0x92, 0xaa, 0x92, 0x44, 0x38, 0x00}, /* gate:output */
+	{0x38, 0x44, 0x82, 0x92, 0x82, 0x44, 0x38, 0x00}, /* gate:output-sharp */
+	{0x38, 0x7c, 0xfe, 0xfe, 0xfe, 0x7c, 0x38, 0x00}, /* gate:binary */
+	{0x10, 0x00, 0x10, 0xaa, 0x10, 0x00, 0x10, 0x00}, /* guide */
+	{0x00, 0x00, 0x00, 0x82, 0x44, 0x38, 0x00, 0x00}, /* eye open */
+	{0x00, 0x38, 0x44, 0x92, 0x28, 0x10, 0x00, 0x00}, /* eye closed */
+	{0x10, 0x54, 0x28, 0xc6, 0x28, 0x54, 0x10, 0x00}  /* unsaved */
+};
+
 SDL_Window *gWindow = NULL;
 SDL_Renderer *gRenderer = NULL;
 SDL_Texture *gTexture = NULL;
 Uint32 *pixels;
-Noton noton;
 
-/* generics */
+#pragma mark - Helpers
 
 int
 distance(Point2d a, Point2d b)
@@ -96,6 +115,12 @@ setpt2d(Point2d *p, int x, int y)
 	return p;
 }
 
+Point2d *
+clamp2d(Point2d *p, int step)
+{
+	return setpt2d(p, p->x / step * step, p->y / step * step);
+}
+
 Point2d
 Pt2d(int x, int y)
 {
@@ -104,14 +129,7 @@ Pt2d(int x, int y)
 	return p;
 }
 
-int
-polarcolor(int polarity)
-{
-	return polarity == 1 ? color4 : !polarity ? color0
-											  : color3;
-}
-
-/* Midi */
+#pragma mark - Midi
 
 void
 initmidi(void)
@@ -133,7 +151,7 @@ playmidi(int channel, int octave, int note, int z)
 		Pm_Message(0x90 + channel, (octave * 12) + note, z ? 100 : 0));
 }
 
-/* Helpers */
+#pragma mark - Generics
 
 Gate *
 nearestgate(Noton *n, Point2d pos)
@@ -142,6 +160,18 @@ nearestgate(Noton *n, Point2d pos)
 	for(i = 0; i < n->glen; ++i) {
 		Gate *g = &n->gates[i];
 		if(distance(pos, g->pos) < 50)
+			return g;
+	}
+	return NULL;
+}
+
+Gate *
+gateat(Noton *n, Point2d pos)
+{
+	int i;
+	for(i = 0; i < n->glen; ++i) {
+		Gate *g = &n->gates[i];
+		if(pos.x == g->pos.x && pos.y == g->pos.y)
 			return g;
 	}
 	return NULL;
@@ -206,7 +236,7 @@ flex(Wire *w)
 	w->flex--;
 }
 
-/* Options */
+#pragma mark - Options
 
 void
 selchan(Noton *n, int channel)
@@ -239,7 +269,7 @@ pause(Noton *n)
 }
 
 void
-destroy(Noton *n)
+reset(Noton *n)
 {
 	int i, locked = 0;
 	for(i = 0; i < n->wlen; i++)
@@ -286,9 +316,7 @@ addgate(Noton *n, GateType type, int polarity, Point2d pos)
 	g->inlen = 0;
 	g->outlen = 0;
 	g->type = type;
-	setpt2d(&g->pos,
-		abs((pos.x + 4) / 8) * 8,
-		abs((pos.y + 4) / 8) * 8);
+	setpt2d(&g->pos, pos.x, pos.y);
 	printf("Add gate #%d \n", g->id);
 	return g;
 }
@@ -313,7 +341,7 @@ beginwire(Brush *b)
 	Point2d *p = gate ? &gate->pos : &b->pos;
 	b->wire.polarity = gate ? gate->polarity : -1;
 	b->wire.len = 0;
-	setpt2d(&b->wire.points[b->wire.len++], p->x, p->y);
+	setpt2d(&b->wire.points[b->wire.len++], p->x + 4, p->y + 4);
 	return 1;
 }
 
@@ -341,7 +369,7 @@ endwire(Brush *b)
 		return abandon(b);
 	if(gateto->type == INPUT || gatefrom == gateto)
 		return abandon(b);
-	setpt2d(&b->pos, gateto->pos.x, gateto->pos.y);
+	setpt2d(&b->pos, gateto->pos.x + 4, gateto->pos.y + 4);
 	extendwire(b);
 	newwire = addwire(&noton, &b->wire, gatefrom, gateto);
 	gatefrom->outputs[gatefrom->outlen++] = newwire;
@@ -349,13 +377,13 @@ endwire(Brush *b)
 	return abandon(b);
 }
 
-/* draw */
+#pragma mark - Draw
 
 void
-pixel(Uint32 *dst, int x, int y, int color)
+putpixel(Uint32 *dst, int x, int y, int color)
 {
-	if(x >= 0 && x < WIDTH - PAD * 2 && y >= 0 && y < HEIGHT - PAD * 2)
-		dst[(y + PAD) * WIDTH + (x + PAD)] = color;
+	if(x >= 0 && x < WIDTH - 8 && y >= 0 && y < HEIGHT - 8)
+		dst[(y + PAD * 8) * WIDTH + (x + PAD * 8)] = theme[color];
 }
 
 void
@@ -365,7 +393,7 @@ line(Uint32 *dst, int ax, int ay, int bx, int by, int color)
 	int dy = -abs(by - ay), sy = ay < by ? 1 : -1;
 	int err = dx + dy, e2;
 	for(;;) {
-		pixel(dst, ax, ay, color);
+		putpixel(dst, ax, ay, color);
 		if(ax == bx && ay == by)
 			break;
 		e2 = 2 * err;
@@ -381,20 +409,33 @@ line(Uint32 *dst, int ax, int ay, int bx, int by, int color)
 }
 
 void
+drawicn(Uint32 *dst, int x, int y, Uint8 *sprite, int fg, int bg)
+{
+	int v, h;
+	for(v = 0; v < 8; v++)
+		for(h = 0; h < 8; h++) {
+			int ch1 = (sprite[v] >> (7 - h)) & 0x1;
+			putpixel(dst, x + h, y + v, ch1 ? fg : bg);
+		}
+}
+
+void
 drawgate(Uint32 *dst, Gate *g)
 {
-	int x, y, r = 8, d = r * 2;
-	for(y = 0; y < d; ++y)
-		for(x = 0; x < d; ++x)
-			if(distance(Pt2d(g->pos.x, g->pos.y), Pt2d(g->pos.x - r + x, g->pos.y - r + y)) < 18)
-				pixel(dst, g->pos.x - r + x, g->pos.y - r + y, polarcolor(g->polarity));
-	if(g->type == OUTPUT) {
-		pixel(dst, g->pos.x - 1, g->pos.y, g->sharp ? color2 : color1);
-		pixel(dst, g->pos.x + 1, g->pos.y, g->sharp ? color2 : color1);
-		pixel(dst, g->pos.x, g->pos.y - 1, g->sharp ? color2 : color1);
-		pixel(dst, g->pos.x, g->pos.y + 1, g->sharp ? color2 : color1);
-	} else if(g->type != POOL)
-		pixel(dst, g->pos.x, g->pos.y, color1);
+	switch(g->type) {
+	case OUTPUT:
+		drawicn(dst, g->pos.x, g->pos.y, icons[1 + g->sharp], g->polarity + 1 + g->sharp + 1, 0);
+		break;
+	case INPUT:
+		drawicn(dst, g->pos.x, g->pos.y, icons[0], g->polarity + 1, 0);
+		break;
+	case POOL:
+		drawicn(dst, g->pos.x, g->pos.y, icons[3], 1, 0);
+		break;
+	case BASIC:
+		drawicn(dst, g->pos.x, g->pos.y, icons[3], g->polarity < 0 ? 3 : g->polarity + 1, 0);
+		break;
+	}
 }
 
 void
@@ -406,17 +447,24 @@ drawwire(Uint32 *dst, Wire *w, int color)
 	for(i = 0; i < w->len - 1; i++) {
 		Point2d *p1 = &w->points[i];
 		Point2d *p2 = &w->points[i + 1];
-		line(dst, p1->x, p1->y, p2->x, p2->y, (int)(noton.frame / 3) % w->len != i ? polarcolor(w->polarity) : color);
+		line(dst, p1->x, p1->y, p2->x, p2->y, (int)(noton.frame / 3) % w->len != i ? w->polarity + 1 : color);
 	}
 }
 
 void
-drawguides(Uint32 *dst, int step)
+drawguides(Uint32 *dst)
 {
 	int x, y;
-	for(x = 1; x < HOR; x++)
-		for(y = 1; y < VER; y++)
-			pixel(dst, x * step, y * step, color3);
+	for(x = 0; x < HOR; x++)
+		for(y = 0; y < VER; y++)
+			drawicn(dst, x * 8, y * 8, icons[4], 4, 0);
+}
+
+void
+drawui(Uint32 *dst)
+{
+	int bottom = VER * 8 + 8;
+	drawicn(dst, 0 * 8, bottom, icons[GUIDES ? 6 : 5], GUIDES ? 1 : 2, 0);
 }
 
 void
@@ -425,20 +473,22 @@ clear(Uint32 *dst)
 	int i, j;
 	for(i = 0; i < HEIGHT; i++)
 		for(j = 0; j < WIDTH; j++)
-			dst[i * WIDTH + j] = color1;
+			dst[i * WIDTH + j] = theme[0];
 }
 
 void
-redraw(Uint32 *dst, Brush *b)
+redraw(Uint32 *dst)
 {
 	int i;
 	clear(dst);
-	drawguides(dst, 16);
+	if(GUIDES)
+		drawguides(dst);
 	for(i = 0; i < noton.glen; i++)
 		drawgate(dst, &noton.gates[i]);
 	for(i = 0; i < noton.wlen; i++)
-		drawwire(dst, &noton.wires[i], color2);
-	drawwire(dst, &b->wire, color3);
+		drawwire(dst, &noton.wires[i], 2);
+	drawwire(dst, &brush.wire, 3);
+	drawui(dst);
 	SDL_UpdateTexture(gTexture, NULL, dst, WIDTH * sizeof(Uint32));
 	SDL_RenderClear(gRenderer);
 	SDL_RenderCopy(gRenderer, gTexture, NULL, NULL);
@@ -446,6 +496,21 @@ redraw(Uint32 *dst, Brush *b)
 }
 
 /* operation */
+
+void
+savemode(int *i, int v)
+{
+	*i = v;
+	redraw(pixels);
+}
+
+void
+selectoption(int option)
+{
+	switch(option) {
+	case 0: savemode(&GUIDES, !GUIDES); break;
+	}
+}
 
 void
 run(Noton *n)
@@ -476,14 +541,14 @@ setup(Noton *n)
 	int i, j;
 	int sharps[12] = {0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0};
 	for(i = 0; i < INPUTMAX; ++i) {
-		int x = i % 2 == 0 ? 32 : 24;
-		n->inputs[i] = addgate(n, INPUT, 0, Pt2d(x, 24 + i * 8));
+		int x = i % 2 == 0 ? 16 : 8;
+		n->inputs[i] = addgate(n, INPUT, 0, Pt2d(x, 16 + i * 8));
 		n->inputs[i]->locked = 1;
 	}
 	for(i = 0; i < CHANNELS; ++i) {
 		for(j = 0; j < OUTPUTMAX; ++j) {
-			int x = WIDTH - (j % 2 == 0 ? 48 : 40) - (i * 16);
-			n->outputs[j] = addgate(n, OUTPUT, 0, Pt2d(x, 24 + j * 8));
+			int x = HOR * 8 - (j % 2 == 0 ? 24 : 16) - (i * 16);
+			n->outputs[j] = addgate(n, OUTPUT, 0, Pt2d(x, 16 + j * 8));
 			n->outputs[j]->locked = 1;
 			n->outputs[j]->note = j + ((i % 3) * 24);
 			n->outputs[j]->channel = i;
@@ -527,44 +592,48 @@ quit(void)
 	exit(0);
 }
 
+#pragma mark - Triggers
+
 void
 domouse(SDL_Event *event, Brush *b)
 {
+	setpt2d(&b->pos,
+		(event->motion.x - (PAD * 8 * ZOOM)) / ZOOM,
+		(event->motion.y - (PAD * 8 * ZOOM)) / ZOOM);
 	switch(event->type) {
 	case SDL_MOUSEBUTTONDOWN:
-		setpt2d(&b->pos,
-			(event->motion.x - (PAD * ZOOM)) / ZOOM,
-			(event->motion.y - (PAD * ZOOM)) / ZOOM);
+		if(event->motion.y / ZOOM / 8 - PAD == VER + 1) {
+			selectoption(event->motion.x / ZOOM / 8 - PAD);
+			break;
+		}
 		if(event->button.button == SDL_BUTTON_RIGHT)
 			break;
 		b->down = 1;
 		if(beginwire(b))
-			redraw(pixels, b);
+			redraw(pixels);
 		break;
 	case SDL_MOUSEMOTION:
 		if(event->button.button == SDL_BUTTON_RIGHT)
 			break;
 		if(b->down) {
-			setpt2d(&b->pos,
-				(event->motion.x - (PAD * ZOOM)) / ZOOM,
-				(event->motion.y - (PAD * ZOOM)) / ZOOM);
 			if(extendwire(b))
-				redraw(pixels, b);
+				redraw(pixels);
 		}
 		break;
 	case SDL_MOUSEBUTTONUP:
-		setpt2d(&b->pos,
-			(event->motion.x - (PAD * ZOOM)) / ZOOM,
-			(event->motion.y - (PAD * ZOOM)) / ZOOM);
 		if(event->button.button == SDL_BUTTON_RIGHT) {
-			if(!nearestgate(&noton, b->pos))
-				addgate(&noton, BASIC, -1, b->pos);
-			redraw(pixels, b);
+			if(b->pos.x < 24 || b->pos.x > HOR * 8 - 72)
+				return;
+			if(b->pos.x > HOR * 8 || b->pos.y > VER * 8)
+				return;
+			if(!gateat(&noton, *clamp2d(&b->pos, 8)))
+				addgate(&noton, BASIC, -1, *clamp2d(&b->pos, 8));
+			redraw(pixels);
 			break;
 		}
 		b->down = 0;
 		if(endwire(b))
-			redraw(pixels, b);
+			redraw(pixels);
 		break;
 	}
 }
@@ -577,7 +646,7 @@ dokey(Noton *n, SDL_Event *event)
 	case SDLK_PLUS: modzoom(1); break;
 	case SDLK_UNDERSCORE:
 	case SDLK_MINUS: modzoom(-1); break;
-	case SDLK_BACKSPACE: destroy(n); break;
+	case SDLK_BACKSPACE: reset(n); break;
 	case SDLK_SPACE: pause(n); break;
 	case SDLK_UP: modoct(n, 1); break;
 	case SDLK_DOWN: modoct(n, -1); break;
@@ -633,10 +702,6 @@ main(int argc, char **argv)
 	Uint32 endtime = 0;
 	Uint32 delta = 0;
 
-	Brush brush;
-	brush.down = 0;
-	brush.wire.len = 0;
-
 	noton.alive = 1;
 	noton.speed = 40;
 	noton.channel = 0;
@@ -659,21 +724,21 @@ main(int argc, char **argv)
 
 		if(noton.alive) {
 			run(&noton);
-			redraw(pixels, &brush);
+			redraw(pixels);
 		}
 
 		while(SDL_PollEvent(&event) != 0) {
 			if(event.type == SDL_QUIT)
 				quit();
 			else if(event.type == SDL_MOUSEBUTTONUP ||
-					event.type == SDL_MOUSEBUTTONDOWN ||
-					event.type == SDL_MOUSEMOTION) {
+				event.type == SDL_MOUSEBUTTONDOWN ||
+				event.type == SDL_MOUSEMOTION) {
 				domouse(&event, &brush);
 			} else if(event.type == SDL_KEYDOWN)
 				dokey(&noton, &event);
 			else if(event.type == SDL_WINDOWEVENT)
 				if(event.window.event == SDL_WINDOWEVENT_EXPOSED)
-					redraw(pixels, &brush);
+					redraw(pixels);
 		}
 
 		begintime = endtime;
